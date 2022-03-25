@@ -50,7 +50,7 @@ CELL_OBJECT g_cell_objects[16384];
 //-------------------------------------------------------------
 // Processes Driver 1 region
 //-------------------------------------------------------------
-int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileStream, int& lobj_first_v, int& lobj_first_t)
+int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* cellsFileStream, IVirtualStream* levelFileStream, int& lobj_first_v, int& lobj_first_t)
 {
 	CDriver1LevelMap* levMapDriver1 = (CDriver1LevelMap*)g_levMap;
 	const OUT_CELL_FILE_HEADER& mapInfo = levMapDriver1->GetMapInfo();
@@ -59,12 +59,12 @@ int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileSt
 
 	if (g_export_worldUnityScript)
 		levelFileStream->Print("// Region %d\n", region->GetNumber());
-	
+
 	CELL_ITERATOR_CACHE cache;
 
 	// walk through all cell data
-	for(int i = 0; i < mapInfo.region_size * mapInfo.region_size; i++)
-	{	
+	for (int i = 0; i < mapInfo.region_size * mapInfo.region_size; i++)
+	{
 		CELL_ITERATOR_D1 iterator;
 		iterator.cache = &cache;
 		CELL_OBJECT* co = region->StartIterator(&iterator, i);
@@ -72,10 +72,16 @@ int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileSt
 		if (!co)
 			continue;
 
-		while(co)
+		while (co)
 		{
 			Vector3D absCellPosition(co->pos.vx * -EXPORT_SCALING, -co->pos.vy * -EXPORT_SCALING, co->pos.vz * EXPORT_SCALING);
 			float cellRotationRad = co->yang / 64.0f * PI_F * 2.0f;
+
+			if (cellsFileStream)
+			{
+				cellsFileStream->Print("# m %d r %d\r\n", co->type, co->yang);
+				cellsFileStream->Print("v %g %g %g\r\n", absCellPosition.x, absCellPosition.y, absCellPosition.z);
+			}
 
 			ModelRef_t* ref = g_levModels.GetModelByIndex(co->type);
 
@@ -86,7 +92,7 @@ int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileSt
 					String cellModelName = ref->name ? String::fromCString(ref->name) : String::fromPrintf("MOD_%d", ref->index);
 
 					float cellRotationDeg = RAD2DEG(cellRotationRad) + 180;
-					
+
 					levelFileStream->Print("var reg%d_o%d = Instantiate(%s, new Vector3(%gf,%gf,%gf), Quaternion.Euler(0.0f,%gf,0.0f)) as GameObject;\n",
 						region->GetNumber(), numRegionObjects, (char*)cellModelName, absCellPosition.x, absCellPosition.y, absCellPosition.z, -cellRotationDeg);
 				}
@@ -103,13 +109,15 @@ int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileSt
 			}
 
 			numRegionObjects++;
-			
+
 			co = levMapDriver1->GetNextCop(&iterator);
 		}
 	}
 
 	if (g_export_worldUnityScript)
 		levelFileStream->Print("// total region cells %d\n", numRegionObjects);
+	if (cellsFileStream)
+		cellsFileStream->Print("# total region cells %d\r\n", numRegionObjects);
 
 	return numRegionObjects;
 }
@@ -117,7 +125,7 @@ int ExportRegionDriver1(CDriver1LevelRegion* region, IVirtualStream* levelFileSt
 //-------------------------------------------------------------
 // Processes Driver 2 region
 //-------------------------------------------------------------
-int ExportRegionDriver2(CDriver2LevelRegion* region, IVirtualStream* levelFileStream, int& lobj_first_v, int& lobj_first_t)
+int ExportRegionDriver2(CDriver2LevelRegion* region, IVirtualStream* cellsFileStream, IVirtualStream* levelFileStream, int& lobj_first_v, int& lobj_first_t)
 {
 	CDriver2LevelMap* levMapDriver2 = (CDriver2LevelMap*)g_levMap;
 	const OUT_CELL_FILE_HEADER& mapInfo = levMapDriver2->GetMapInfo();
@@ -149,6 +157,12 @@ int ExportRegionDriver2(CDriver2LevelRegion* region, IVirtualStream* levelFileSt
 
 			Vector3D absCellPosition(co.pos.vx * -EXPORT_SCALING, -co.pos.vy * EXPORT_SCALING, co.pos.vz * EXPORT_SCALING);
 			float cellRotationRad = co.yang / 64.0f * PI_F * 2.0f;
+
+			if (cellsFileStream)
+			{
+				cellsFileStream->Print("# m %d r %d\r\n", co.type, co.yang);
+				cellsFileStream->Print("v %g %g %g\r\n", absCellPosition.x, absCellPosition.y, absCellPosition.z);
+			}
 
 			ModelRef_t* ref = g_levModels.GetModelByIndex(co.type);
 
@@ -183,6 +197,9 @@ int ExportRegionDriver2(CDriver2LevelRegion* region, IVirtualStream* levelFileSt
 
 	if (g_export_worldUnityScript)
 		levelFileStream->Print("// total region cells %d\n", numRegionObjects);
+
+	if (cellsFileStream)
+		cellsFileStream->Print("# total region cells %d\r\n", numRegionObjects);
 
 	return numRegionObjects;
 }
@@ -228,10 +245,10 @@ void ExportRegions()
 	Msg("World size:\n [%dx%d] cells\n [%dx%d] regions\n", g_levMap->GetCellsAcross(), g_levMap->GetCellsDown(), dim_x, dim_y);
 
 	// Debug information: Print the map to the console.
-	for (int i = 0; i < dim_x* dim_y; i++, counter++)
+	for (int i = 0; i < dim_x * dim_y; i++, counter++)
 	{
 		char str[512];
-		if(counter < dim_x)
+		if (counter < dim_x)
 		{
 			str[counter] = g_levMap->GetRegion(i)->IsEmpty() ? '.' : 'O';
 		}
@@ -246,26 +263,31 @@ void ExportRegions()
 	Msg("\n");
 
 	int numCellObjectsRead = 0;
-	
+
 	FILE* levelFile;
+	FILE* cellsFile;
+
+	IVirtualStream* cellsStream;
 	IVirtualStream* levelStream;
 
 	CMemoryStream memStream;
 
 	String justLevFilename = File::basename(g_levname, File::extension(g_levname));
 	String levFileNameWithoutExt = File::dirname(g_levname) + "/" + justLevFilename;
-	
-	if(g_export_worldUnityScript)
+
+	if (g_export_worldUnityScript)
 	{
 		memStream.Open(nullptr, VS_OPEN_WRITE | VS_OPEN_TEXT, 65535 * 2048);
 		Directory::create(File::dirname(g_levname) + "/regions");
 	}
 	else
 	{
+		cellsFile = fopen(String::fromPrintf("%s_CELLPOS_MAP.obj", (char*)levFileNameWithoutExt), "wb");
 		levelFile = fopen(String::fromPrintf("%s_LEVELMODEL.obj", (char*)levFileNameWithoutExt), "wb");
 	}
 
 	CFileStream fileStream(levelFile);
+	CFileStream cellsFileStream(cellsFile);
 
 	if (g_export_worldUnityScript)
 	{
@@ -275,6 +297,7 @@ void ExportRegions()
 	else
 	{
 		// use file stream directly
+		cellsStream = &cellsFileStream;
 		levelStream = &fileStream;
 		levelStream->Print("mtllib %s_LEVELMODEL.mtl\r\n", (char*)justLevFilename);
 
@@ -309,7 +332,7 @@ void ExportRegions()
 		spoolContext.lumpInfo = &g_levInfo;
 
 		int totalRegions = g_levMap->GetRegionsAcross() * g_levMap->GetRegionsDown();
-		
+
 		for (int i = 0; i < totalRegions; i++)
 		{
 			// load region
@@ -321,35 +344,35 @@ void ExportRegions()
 			if (region->IsEmpty())
 				continue;
 
-			if(g_export_worldUnityScript)
+			if (g_export_worldUnityScript)
 			{
 				levelFile = fopen(String::fromPrintf("%s/regions/%s_reg%d.cs", (char*)File::dirname(g_levname), (char*)levNameOnly, i), "wb");
 				PrintRegionHeader(&memStream);
 			}
 
 			Msg("Exporting region %d...", i);
-			
+
 			if (g_levMap->GetFormat() >= LEV_FORMAT_DRIVER2_ALPHA16)
 			{
-				numCellObjectsRead += ExportRegionDriver2((CDriver2LevelRegion*)region, levelStream, lobj_first_v, lobj_first_t);
+				numCellObjectsRead += ExportRegionDriver2((CDriver2LevelRegion*)region, cellsStream, levelStream, lobj_first_v, lobj_first_t);
 			}
 			else
 			{
-				numCellObjectsRead += ExportRegionDriver1((CDriver1LevelRegion*)region, levelStream, lobj_first_v, lobj_first_t);
+				numCellObjectsRead += ExportRegionDriver1((CDriver1LevelRegion*)region, cellsStream, levelStream, lobj_first_v, lobj_first_t);
 			}
 
 			// format into Unity CS script
 			if (g_export_worldUnityScript)
 			{
 				String regionName = String::fromPrintf("%s_reg%d", (char*)levNameOnly, i);
-				
+
 				int zero = 0;
 				memStream.Write(&zero, 1, sizeof(zero));
-				
+
 				fprintf(levelFile, s_UnityScriptTemplate, (char*)regionName, memStream.GetBasePointer());
 
 				memStream.Seek(0, VS_SEEK_SET);
-				
+
 				fclose(levelFile);
 				levelFile = nullptr;
 			}
@@ -365,7 +388,7 @@ void ExportRegions()
 
 		MsgAccept("Successfully exported world\n", (char*)g_levname);
 
-		if(levelFile)
+		if (levelFile)
 			fclose(levelFile);
 
 		fclose(fp);
